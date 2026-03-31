@@ -1,0 +1,6 @@
+{
+  "name": "claude-code-setup",
+  "version": "0.1.0",
+  "description": "Standardize Claude Code configuration across your team. Bootstrap, sync, and manage CLAUDE.md, hooks, MCP servers, and settings from a shared profile.",
+  "author": "yasu551"
+}
