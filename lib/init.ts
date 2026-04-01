@@ -14,8 +14,11 @@ import { createBackup } from "./backup.js";
 import { inspectRepo, hashFingerprint } from "./inspect.js";
 import type { RepoFingerprint } from "./inspect.js";
 import { getWizardQuestions, resolveAnswers } from "./wizard.js";
-import type { WizardQuestion, WizardAnswers } from "./wizard.js";
+import type { WizardQuestion, WizardAnswers, ProfileWizardAnswers, ProfileWizardQuestion } from "./wizard.js";
+import { getProfileWizardQuestions } from "./wizard.js";
 import { generateProfile, formatProvenanceReport } from "./generate.js";
+import { createTeamProfile } from "./profile-create.js";
+import type { ProfileCreateResult } from "./profile-create.js";
 
 export interface InitOptions {
   repoRoot: string;
@@ -23,6 +26,7 @@ export interface InitOptions {
   force?: boolean;
   overlayOverride?: string | null;
   wizardAnswers?: Partial<WizardAnswers>;
+  profileWizardAnswers?: ProfileWizardAnswers;
 }
 
 export interface InitResult {
@@ -31,11 +35,17 @@ export interface InitResult {
   overlay: string | null;
   filesModified: string[];
   provenanceReport?: string;
+  profileCreation?: boolean;
 }
 
 export interface WizardInfo {
   fingerprint: RepoFingerprint;
   questions: WizardQuestion[];
+  isEmptyRepo: boolean;
+}
+
+export interface ProfileWizardInfo {
+  questions: ProfileWizardQuestion[];
 }
 
 // Target file paths relative to repo root
@@ -92,7 +102,17 @@ function ensureGitignore(repoRoot: string): boolean {
 export function getWizardInfo(repoRoot: string): WizardInfo {
   const fingerprint = inspectRepo(repoRoot);
   const questions = getWizardQuestions(fingerprint);
-  return { fingerprint, questions };
+  const isEmptyRepo = fingerprint.language === null;
+  return { fingerprint, questions, isEmptyRepo };
+}
+
+/**
+ * Get profile wizard questions for creating a team profile repo.
+ * Call this when /init detects an empty repo (no language files).
+ */
+export function getProfileWizardInfo(): ProfileWizardInfo {
+  const questions = getProfileWizardQuestions();
+  return { questions };
 }
 
 /**
@@ -192,6 +212,19 @@ export function init(options: InitOptions): InitResult {
       "This repo already has a team profile configured (.claude-team-lock.json exists). " +
         "Use --force to re-initialize."
     );
+  }
+
+  // === PROFILE CREATION PATH (empty repo → create team profile) ===
+  if (!profileUrl && options.profileWizardAnswers) {
+    const result = createTeamProfile(repoRoot, options.profileWizardAnswers, { force });
+    return {
+      profileName: "team-profile",
+      profileVersion: "1.0.0",
+      overlay: null,
+      filesModified: result.filesWritten,
+      provenanceReport: result.provenanceReport,
+      profileCreation: true,
+    };
   }
 
   // === FETCHED PROFILE PATH (existing behavior) ===
