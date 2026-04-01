@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { detectOverlay } from "./detect.js";
 import { createFetchContext, fetchProfile, combineLayers } from "./profile.js";
+import type { ProfileLayer } from "./profile.js";
 import {
   upsertManagedSection,
   deepMerge,
@@ -10,12 +11,18 @@ import {
 import type { TeamHookRef } from "./merge.js";
 import { buildLockfile, writeLockfile, lockfileExists } from "./lockfile.js";
 import { createBackup } from "./backup.js";
+import { inspectRepo, hashFingerprint } from "./inspect.js";
+import type { RepoFingerprint } from "./inspect.js";
+import { getWizardQuestions, resolveAnswers } from "./wizard.js";
+import type { WizardQuestion, WizardAnswers } from "./wizard.js";
+import { generateProfile, formatProvenanceReport } from "./generate.js";
 
 export interface InitOptions {
   repoRoot: string;
-  profileUrl: string;
+  profileUrl?: string;
   force?: boolean;
   overlayOverride?: string | null;
+  wizardAnswers?: Partial<WizardAnswers>;
 }
 
 export interface InitResult {
@@ -23,6 +30,12 @@ export interface InitResult {
   profileVersion: string;
   overlay: string | null;
   filesModified: string[];
+  provenanceReport?: string;
+}
+
+export interface WizardInfo {
+  fingerprint: RepoFingerprint;
+  questions: WizardQuestion[];
 }
 
 // Target file paths relative to repo root
@@ -73,43 +86,34 @@ function ensureGitignore(repoRoot: string): boolean {
 }
 
 /**
- * Run the full /init flow.
+ * Inspect the repo and return the wizard questions that need to be asked.
+ * Call this when /init is invoked without a profile URL.
  */
-export function init(options: InitOptions): InitResult {
-  const { repoRoot, profileUrl, force = false, overlayOverride } = options;
+export function getWizardInfo(repoRoot: string): WizardInfo {
+  const fingerprint = inspectRepo(repoRoot);
+  const questions = getWizardQuestions(fingerprint);
+  return { fingerprint, questions };
+}
 
-  // Step 1: Check for existing lockfile
-  if (lockfileExists(repoRoot) && !force) {
-    throw new Error(
-      "This repo already has a team profile configured (.claude-team-lock.json exists). " +
-        "Use --force to re-initialize."
-    );
-  }
-
-  // Step 2: Detect repo type
-  const detectedOverlay = overlayOverride ?? detectOverlay(repoRoot);
-
-  // Step 3: Fetch profile
-  const ctx = createFetchContext(profileUrl);
-  const profile = fetchProfile(ctx, detectedOverlay);
-
-  // Step 4: Combine base + overlay into a single layer
-  const combined = combineLayers(profile.base, profile.overlay);
-
-  // Step 5: Determine which files will be modified
+/**
+ * Apply a ProfileLayer to the repo (shared between fetched and generated paths).
+ */
+function applyLayer(
+  repoRoot: string,
+  combined: ProfileLayer,
+  lockfileOpts: Parameters<typeof buildLockfile>[0]
+): { filesModified: string[] } {
   const filesToBackup = [
     TARGETS.claudeMd,
     TARGETS.mcpJson,
     TARGETS.settingsJson,
   ];
-
-  // Step 6: Create backup
   const backup = createBackup(repoRoot, filesToBackup);
 
   try {
     const filesModified: string[] = [];
 
-    // Step 7: Apply managed sections to CLAUDE.md
+    // Apply managed sections to CLAUDE.md
     if (combined.claudeMdSections) {
       const claudeMdPath = join(repoRoot, TARGETS.claudeMd);
       const existing = readFileOrDefault(claudeMdPath, "");
@@ -118,7 +122,7 @@ export function init(options: InitOptions): InitResult {
       filesModified.push(TARGETS.claudeMd);
     }
 
-    // Step 8: Deep merge .mcp.json
+    // Deep merge .mcp.json
     if (combined.mcpJson) {
       const mcpPath = join(repoRoot, TARGETS.mcpJson);
       const existing = readFileOrDefault(mcpPath, "{}");
@@ -128,14 +132,13 @@ export function init(options: InitOptions): InitResult {
       filesModified.push(TARGETS.mcpJson);
     }
 
-    // Step 9: Deep merge settings.json and hooks
+    // Deep merge settings.json and hooks
     let teamHookRefs: Record<string, TeamHookRef[]> = {};
 
     const settingsPath = join(repoRoot, TARGETS.settingsJson);
     const existingSettings = readFileOrDefault(settingsPath, "{}");
     let localSettings = JSON.parse(existingSettings);
 
-    // Merge non-hook settings first
     if (combined.settingsJson) {
       const { hooks: _profileHooks, ...profileSettingsWithoutHooks } =
         combined.settingsJson as Record<string, unknown>;
@@ -144,7 +147,6 @@ export function init(options: InitOptions): InitResult {
       }
     }
 
-    // Merge hooks
     if (combined.hooksJson) {
       const hookResult = mergeHooksInSettings(
         localSettings,
@@ -158,33 +160,58 @@ export function init(options: InitOptions): InitResult {
     writeFileSafe(settingsPath, JSON.stringify(localSettings, null, 2) + "\n");
     filesModified.push(TARGETS.settingsJson);
 
-    // Step 10: Write lockfile
-    const lockfile = buildLockfile({
-      profileUrl,
-      version: profile.metadata.version,
-      overlays: detectedOverlay ? [detectedOverlay] : [],
-      managedSectionContent: combined.claudeMdSections ?? "",
-      mcpJsonProfileContent: combined.mcpJson
-        ? JSON.stringify(combined.mcpJson)
-        : "",
-      settingsJsonProfileContent: combined.settingsJson
-        ? JSON.stringify(combined.settingsJson)
-        : "",
-      hooksProfileContent: combined.hooksJson
-        ? JSON.stringify(combined.hooksJson)
-        : "",
-      teamHookRefs,
-    });
+    // Write lockfile
+    const lockfile = buildLockfile({ ...lockfileOpts, teamHookRefs });
     writeLockfile(repoRoot, lockfile);
     filesModified.push(TARGETS.lockfile);
 
-    // Step 11: Update .gitignore
+    // Update .gitignore
     if (ensureGitignore(repoRoot)) {
       filesModified.push(TARGETS.gitignore);
     }
 
-    // Success — clean up backup
     backup.cleanup();
+    return { filesModified };
+  } catch (error) {
+    backup.restore();
+    throw error;
+  }
+}
+
+/**
+ * Run the full /init flow.
+ * If profileUrl is provided, fetches from the remote profile (existing behavior).
+ * If profileUrl is omitted, uses the wizard to generate a profile.
+ */
+export function init(options: InitOptions): InitResult {
+  const { repoRoot, profileUrl, force = false, overlayOverride, wizardAnswers: userAnswers } = options;
+
+  // Step 1: Check for existing lockfile
+  if (lockfileExists(repoRoot) && !force) {
+    throw new Error(
+      "This repo already has a team profile configured (.claude-team-lock.json exists). " +
+        "Use --force to re-initialize."
+    );
+  }
+
+  // === FETCHED PROFILE PATH (existing behavior) ===
+  if (profileUrl) {
+    const detectedOverlay = overlayOverride ?? detectOverlay(repoRoot);
+    const ctx = createFetchContext(profileUrl);
+    const profile = fetchProfile(ctx, detectedOverlay);
+    const combined = combineLayers(profile.base, profile.overlay);
+
+    const { filesModified } = applyLayer(repoRoot, combined, {
+      profileUrl,
+      version: profile.metadata.version,
+      overlays: detectedOverlay ? [detectedOverlay] : [],
+      managedSectionContent: combined.claudeMdSections ?? "",
+      mcpJsonProfileContent: combined.mcpJson ? JSON.stringify(combined.mcpJson) : "",
+      settingsJsonProfileContent: combined.settingsJson ? JSON.stringify(combined.settingsJson) : "",
+      hooksProfileContent: combined.hooksJson ? JSON.stringify(combined.hooksJson) : "",
+      teamHookRefs: {},
+      source: "remote",
+    });
 
     return {
       profileName: profile.metadata.name,
@@ -192,9 +219,36 @@ export function init(options: InitOptions): InitResult {
       overlay: detectedOverlay,
       filesModified,
     };
-  } catch (error) {
-    // Rollback on any error
-    backup.restore();
-    throw error;
   }
+
+  // === GENERATED PROFILE PATH (wizard) ===
+  const fingerprint = inspectRepo(repoRoot);
+  const answers = resolveAnswers(fingerprint, userAnswers ?? {});
+  const { layer, provenance } = generateProfile(fingerprint, answers);
+
+  const fpHash = hashFingerprint(fingerprint);
+
+  const { filesModified } = applyLayer(repoRoot, layer, {
+    profileUrl: "generated",
+    version: "1.0.0",
+    overlays: fingerprint.language ? [fingerprint.language] : [],
+    managedSectionContent: layer.claudeMdSections ?? "",
+    mcpJsonProfileContent: layer.mcpJson ? JSON.stringify(layer.mcpJson) : "",
+    settingsJsonProfileContent: layer.settingsJson ? JSON.stringify(layer.settingsJson) : "",
+    hooksProfileContent: layer.hooksJson ? JSON.stringify(layer.hooksJson) : "",
+    teamHookRefs: {},
+    source: "generated",
+    fingerprint: fpHash,
+    wizardAnswers: answers,
+  });
+
+  const provenanceReport = formatProvenanceReport(fingerprint, answers, provenance, filesModified);
+
+  return {
+    profileName: "generated",
+    profileVersion: "1.0.0",
+    overlay: fingerprint.language,
+    filesModified,
+    provenanceReport,
+  };
 }

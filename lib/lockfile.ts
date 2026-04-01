@@ -2,16 +2,20 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { TeamHookRef } from "./merge.js";
+import type { WizardAnswers } from "./wizard.js";
 
 const LOCKFILE_NAME = ".claude-team-lock.json";
 
 export interface Lockfile {
   profile: string;
+  source: "remote" | "generated";
   version: string;
   appliedAt: string;
   overlays: string[];
   checksums: Record<string, string>;
   teamHookRefs?: Record<string, TeamHookRef[]>;
+  fingerprint?: string;
+  wizardAnswers?: WizardAnswers;
 }
 
 /**
@@ -60,9 +64,13 @@ export function buildLockfile(opts: {
   settingsJsonProfileContent: string;
   hooksProfileContent: string;
   teamHookRefs: Record<string, TeamHookRef[]>;
+  source?: "remote" | "generated";
+  fingerprint?: string;
+  wizardAnswers?: WizardAnswers;
 }): Lockfile {
-  return {
+  const lockfile: Lockfile = {
     profile: opts.profileUrl,
+    source: opts.source ?? "remote",
     version: opts.version,
     appliedAt: new Date().toISOString(),
     overlays: opts.overlays,
@@ -74,4 +82,9 @@ export function buildLockfile(opts: {
     },
     teamHookRefs: opts.teamHookRefs,
   };
+
+  if (opts.fingerprint) lockfile.fingerprint = opts.fingerprint;
+  if (opts.wizardAnswers) lockfile.wizardAnswers = opts.wizardAnswers;
+
+  return lockfile;
 }

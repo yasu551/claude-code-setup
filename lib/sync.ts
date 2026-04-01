@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createFetchContext, fetchProfile, combineLayers } from "./profile.js";
+import type { ProfileLayer } from "./profile.js";
 import {
   upsertManagedSection,
   extractManagedSection,
@@ -17,6 +18,9 @@ import {
 } from "./lockfile.js";
 import type { Lockfile } from "./lockfile.js";
 import { createBackup } from "./backup.js";
+import { inspectRepo, hashFingerprint } from "./inspect.js";
+import { resolveAnswers } from "./wizard.js";
+import { generateProfile } from "./generate.js";
 
 export interface SyncOptions {
   repoRoot: string;
@@ -97,21 +101,50 @@ export function sync(options: SyncOptions): SyncResult {
     );
   }
 
-  // Step 2: Fetch latest profile
-  const ctx = createFetchContext(lockfile.profile);
-  const overlayName = lockfile.overlays.length > 0 ? lockfile.overlays[0] : null;
-  const profile = fetchProfile(ctx, overlayName);
-  const combined = combineLayers(profile.base, profile.overlay);
+  // Step 2: Get latest profile (fetched or regenerated)
+  let combined: ProfileLayer;
+  let newVersion: string;
+  let newProfileUrl: string;
+  let newFingerprint: string | undefined;
 
-  // Step 3: Check if already up to date
-  if (profile.metadata.version === lockfile.version) {
-    return {
-      status: "up_to_date",
-      fromVersion: lockfile.version,
-      toVersion: profile.metadata.version,
-      diffs: [],
-      conflict: null,
-    };
+  if (lockfile.source === "generated") {
+    // Re-run inspection with stored wizard answers
+    const fingerprint = inspectRepo(repoRoot);
+    const answers = resolveAnswers(fingerprint, lockfile.wizardAnswers ?? {});
+    const { layer } = generateProfile(fingerprint, answers);
+    combined = layer;
+    newVersion = "1.0.0";
+    newProfileUrl = "generated";
+    newFingerprint = hashFingerprint(fingerprint);
+
+    // For generated profiles, check if fingerprint changed (instead of version)
+    if (newFingerprint === lockfile.fingerprint) {
+      return {
+        status: "up_to_date",
+        fromVersion: lockfile.version,
+        toVersion: newVersion,
+        diffs: [],
+        conflict: null,
+      };
+    }
+  } else {
+    const ctx = createFetchContext(lockfile.profile);
+    const overlayName = lockfile.overlays.length > 0 ? lockfile.overlays[0] : null;
+    const profile = fetchProfile(ctx, overlayName);
+    combined = combineLayers(profile.base, profile.overlay);
+    newVersion = profile.metadata.version;
+    newProfileUrl = lockfile.profile;
+
+    // Check if already up to date
+    if (profile.metadata.version === lockfile.version) {
+      return {
+        status: "up_to_date",
+        fromVersion: lockfile.version,
+        toVersion: profile.metadata.version,
+        diffs: [],
+        conflict: null,
+      };
+    }
   }
 
   // Step 4: Detect managed section conflict
@@ -131,7 +164,7 @@ export function sync(options: SyncOptions): SyncResult {
     return {
       status: "updated",
       fromVersion: lockfile.version,
-      toVersion: profile.metadata.version,
+      toVersion: newVersion,
       diffs: [],
       conflict,
     };
@@ -220,8 +253,8 @@ export function sync(options: SyncOptions): SyncResult {
 
     // Step 9: Write updated lockfile
     const newLockfile = buildLockfile({
-      profileUrl: lockfile.profile,
-      version: profile.metadata.version,
+      profileUrl: newProfileUrl,
+      version: newVersion,
       overlays: lockfile.overlays,
       managedSectionContent: combined.claudeMdSections ?? "",
       mcpJsonProfileContent: combined.mcpJson
@@ -234,6 +267,9 @@ export function sync(options: SyncOptions): SyncResult {
         ? JSON.stringify(combined.hooksJson)
         : "",
       teamHookRefs,
+      source: lockfile.source ?? "remote",
+      fingerprint: newFingerprint,
+      wizardAnswers: lockfile.wizardAnswers,
     });
     writeLockfile(repoRoot, newLockfile);
 
@@ -243,7 +279,7 @@ export function sync(options: SyncOptions): SyncResult {
     return {
       status: "updated",
       fromVersion: lockfile.version,
-      toVersion: profile.metadata.version,
+      toVersion: newVersion,
       diffs,
       conflict: null,
     };
