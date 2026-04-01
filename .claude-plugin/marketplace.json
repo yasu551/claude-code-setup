@@ -1,0 +1,19 @@
+{
+  "name": "yasu551-plugins",
+  "owner": {
+    "name": "yasu551"
+  },
+  "plugins": [
+    {
+      "name": "claude-code-setup",
+      "description": "Standardize Claude Code configuration across your team. Bootstrap, sync, and manage CLAUDE.md, hooks, MCP servers, and settings from a shared profile.",
+      "source": "./",
+      "skills": ["./skills/setup"],
+      "version": "0.1.0",
+      "author": {
+        "name": "yasu551"
+      },
+      "category": "workflow"
+    }
+  ]
+}

@@ -6,11 +6,14 @@ Every developer on your team gets different CLAUDE.md files, different hooks, di
 
 ## Quick Start
 
-### 1. Install the plugin
+### 1. Register the marketplace and install
 
 ```bash
-/plugin install claude-code-setup
+/plugin marketplace add https://github.com/yasu551/claude-code-setup
+/plugin install claude-code-setup@yasu551-plugins
 ```
+
+> **Note:** The `@yasu551-plugins` qualifier distinguishes this from the official `claude-code-setup@claude-plugins-official` plugin. Both can coexist.
 
 ### 2. Create a team profile repo
 
