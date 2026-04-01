@@ -64,13 +64,25 @@ Example `base/CLAUDE.md.sections`:
 
 This detects your repo type (JS, Python, Go, Rust, Ruby), fetches the profile, and applies base + overlay config. Your CLAUDE.md gets a managed section with team rules, .mcp.json and settings.json are deep merged, and hooks are installed.
 
-**Option B: Interactive wizard (no profile repo needed)**
+**Option B: Interactive wizard (existing repo, no profile needed)**
 
 ```bash
 /init
 ```
 
 Without a URL, the plugin inspects your repo (language, framework, test runner, linter, CI, Docker, etc.), asks a few adaptive questions about your preferences, and generates tailored config. Every generated rule traces back to evidence found in your repo.
+
+**Option C: Vision-first project creation (empty repo)**
+
+```bash
+/init
+```
+
+In an empty repo, choose "Set up a new project." Answer 6-8 questions about what you're building (system type, language, framework, persistence, testing, security) and get three outputs:
+
+1. **DESIGN.md** — An architecture blueprint that Claude reads on every session. Components, data flow, technical decisions, open risks.
+2. **CLAUDE.md + settings + hooks** — Claude knows your stack, conventions, and test commands from minute one.
+3. **Project scaffold** — src/, tests/, entry point, config files (package.json, go.mod, etc.). Ready to start coding.
 
 ### 4. Keep it in sync
 
@@ -95,7 +107,7 @@ Bootstrap this repo with a team profile or interactive wizard.
 - Creates `.claude-team-lock.json` to track the applied version
 - Use `--force` to re-initialize an already configured repo
 
-**Without a URL (interactive wizard):**
+**Without a URL (interactive wizard, existing repo):**
 - Inspects your repo: language, framework, package manager, test runner, linter, formatter, CI, Docker, database
 - Asks adaptive questions (skips what it can infer from your tooling):
   - Testing rigor: minimal / standard / strict
@@ -104,6 +116,10 @@ Bootstrap this repo with a team profile or interactive wizard.
 - Generates tailored config from built-in stack templates
 - Displays a provenance report showing what was detected and why each config was applied
 - Lockfile records `source: "generated"` with fingerprint and answers for reproducible syncs
+
+**Without a URL (empty repo — two choices):**
+- **Set up a new project:** Asks what you're building (system type, language, framework, persistence, testing, security). Generates DESIGN.md architecture blueprint, CLAUDE.md config, and project scaffold (src/, tests/, config files). Supports JavaScript, Python, Go, Rust, Ruby with framework-specific scaffolds.
+- **Create a team profile:** Creates a profile repo structure that other repos can consume with `/init`.
 
 ### `/sync`
 
@@ -201,7 +217,7 @@ npm test          # Run tests
 npm run test:watch  # Watch mode
 ```
 
-146 tests covering merge engine, repo detection, repo inspection, wizard flow, config generation, profile fetching, init/sync/status/detach flows, backup/rollback, and drift checking.
+255 tests covering merge engine, repo detection, repo inspection, wizard flow, config generation, profile fetching, init/sync/status/detach flows, backup/rollback, drift checking, project creation, design doc generation, and project scaffolding.
 
 ## License
 
