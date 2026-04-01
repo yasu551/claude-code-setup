@@ -43,42 +43,73 @@ Initialize this repository with Claude Code configuration, either from a team pr
 
 On any error, roll back all changes to pre-init state.
 
-## Profile Creation Mode
+## Empty Repo Mode
 
 If no profile URL is provided AND the repo has no recognized language files,
-offer to create a team profile repo:
+offer TWO choices:
 
 1. Call `getWizardInfo(repoRoot)` — check `isEmptyRepo`.
-2. If `isEmptyRepo` is true, ask the user: "This repo has no recognized language files. Would you like to create a team profile that other repos can use with /init?"
-3. If the user confirms, call `getProfileWizardInfo()` and present the profile wizard questions one at a time:
+2. If `isEmptyRepo` is true, ask the user:
+   "This repo has no recognized language files. What would you like to do?"
+   A) Set up a new project — I want to build something here
+   B) Create a team profile — I want to share config with other repos
+
+### Choice A: Project Creation Mode
+
+1. Call `getProjectWizardInfo()` and present the project wizard questions one at a time:
+   - Project name (free text)
+   - Project description (free text, one sentence)
+   - System type: web app / API / CLI / library / full-stack
+   - Language: JavaScript/TypeScript, Python, Go, Rust, Ruby
+   - Framework (conditional on language + systemType, use `getFrameworkOptions()`)
+   - Persistence: none / SQL / NoSQL / file-based (skipped for CLI/library)
+   - Testing rigor: minimal / standard / strict
+   - Security posture: relaxed / standard / strict
+2. Collect answers into a `ProjectWizardAnswers` object.
+3. Call `init({ repoRoot, projectWizardAnswers: answers })`.
+4. Display the provenance report from the result.
+5. Suggest: "Review DESIGN.md and refine the architecture before starting implementation."
+
+### Choice B: Profile Creation Mode
+
+1. Call `getProfileWizardInfo()` and present the profile wizard questions one at a time:
    - Testing rigor, Code change style, Security posture (shared)
    - Commit message style, Documentation level (team conventions)
    - For each language (JavaScript, Python, Go, Rust, Ruby): "Does your team use [language]?" (yes/no)
-4. Collect answers into a `ProfileWizardAnswers` object (at least one language must be selected).
-5. Call `init({ repoRoot, profileWizardAnswers: answers })`.
-6. Display the provenance report from the result.
+2. Collect answers into a `ProfileWizardAnswers` object (at least one language must be selected).
+3. Call `init({ repoRoot, profileWizardAnswers: answers })`.
+4. Display the provenance report from the result.
 
 ## Implementation
 
 When running the wizard flow, use `getWizardInfo()` from `lib/init.ts` to get the fingerprint and questions, then call `init()` with the collected `wizardAnswers`.
 
 ```typescript
-import { getWizardInfo, getProfileWizardInfo, init } from "../lib/init.js";
-import { resolveProfileAnswers, SUPPORTED_OVERLAYS } from "../lib/wizard.js";
+import { getWizardInfo, getProfileWizardInfo, getProjectWizardInfo, init } from "../lib/init.js";
+import { resolveProfileAnswers, resolveProjectAnswers, getFrameworkOptions, SUPPORTED_OVERLAYS } from "../lib/wizard.js";
 
 // Step 1: Get wizard info
 const { fingerprint, questions, isEmptyRepo } = getWizardInfo(repoRoot);
 
-// Step 2: If empty repo, offer profile creation
+// Step 2: If empty repo, offer two choices
 if (isEmptyRepo && !profileUrl) {
-  // Ask: "Would you like to create a team profile?"
-  // If yes:
+  // Ask: "Set up a new project" or "Create a team profile"
+
+  // Choice A: Project creation
+  const { questions: projectQuestions } = getProjectWizardInfo();
+  // Present projectQuestions one at a time
+  // For framework question, use getFrameworkOptions(language, systemType) to get options
+  const answers = resolveProjectAnswers(userAnswers);
+  const result = init({ repoRoot, projectWizardAnswers: answers });
+  // Display result.provenanceReport
+  // Suggest: "Review DESIGN.md and refine the architecture"
+  return;
+
+  // Choice B: Profile creation
   const { questions: profileQuestions } = getProfileWizardInfo();
   // Present profileQuestions + language yes/no questions
-  // Collect answers into ProfileWizardAnswers
-  const answers = resolveProfileAnswers(userAnswers);
-  const result = init({ repoRoot, profileWizardAnswers: answers });
-  // Display result.provenanceReport
+  const profileAnswers = resolveProfileAnswers(userProfileAnswers);
+  const profileResult = init({ repoRoot, profileWizardAnswers: profileAnswers });
   return;
 }
 

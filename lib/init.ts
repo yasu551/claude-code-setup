@@ -14,11 +14,13 @@ import { createBackup } from "./backup.js";
 import { inspectRepo, hashFingerprint } from "./inspect.js";
 import type { RepoFingerprint } from "./inspect.js";
 import { getWizardQuestions, resolveAnswers } from "./wizard.js";
-import type { WizardQuestion, WizardAnswers, ProfileWizardAnswers, ProfileWizardQuestion } from "./wizard.js";
-import { getProfileWizardQuestions } from "./wizard.js";
+import type { WizardQuestion, WizardAnswers, ProfileWizardAnswers, ProfileWizardQuestion, ProjectWizardAnswers, ProjectWizardQuestion } from "./wizard.js";
+import { getProfileWizardQuestions, getProjectWizardQuestions } from "./wizard.js";
 import { generateProfile, formatProvenanceReport } from "./generate.js";
 import { createTeamProfile } from "./profile-create.js";
 import type { ProfileCreateResult } from "./profile-create.js";
+import { createProject } from "./project-create.js";
+import type { ProjectCreateResult } from "./project-create.js";
 
 export interface InitOptions {
   repoRoot: string;
@@ -27,6 +29,7 @@ export interface InitOptions {
   overlayOverride?: string | null;
   wizardAnswers?: Partial<WizardAnswers>;
   profileWizardAnswers?: ProfileWizardAnswers;
+  projectWizardAnswers?: ProjectWizardAnswers;
 }
 
 export interface InitResult {
@@ -36,6 +39,8 @@ export interface InitResult {
   filesModified: string[];
   provenanceReport?: string;
   profileCreation?: boolean;
+  projectCreation?: boolean;
+  designDocPath?: string;
 }
 
 export interface WizardInfo {
@@ -46,6 +51,10 @@ export interface WizardInfo {
 
 export interface ProfileWizardInfo {
   questions: ProfileWizardQuestion[];
+}
+
+export interface ProjectWizardInfo {
+  questions: ProjectWizardQuestion[];
 }
 
 // Target file paths relative to repo root
@@ -112,6 +121,15 @@ export function getWizardInfo(repoRoot: string): WizardInfo {
  */
 export function getProfileWizardInfo(): ProfileWizardInfo {
   const questions = getProfileWizardQuestions();
+  return { questions };
+}
+
+/**
+ * Get project wizard questions for creating a new project in an empty repo.
+ * Call this when /init detects an empty repo and the user chooses "set up a new project".
+ */
+export function getProjectWizardInfo(): ProjectWizardInfo {
+  const questions = getProjectWizardQuestions();
   return { questions };
 }
 
@@ -224,6 +242,37 @@ export function init(options: InitOptions): InitResult {
       filesModified: result.filesWritten,
       provenanceReport: result.provenanceReport,
       profileCreation: true,
+    };
+  }
+
+  // === PROJECT CREATION PATH (empty repo → set up new project) ===
+  if (!profileUrl && options.projectWizardAnswers) {
+    const projectResult = createProject(repoRoot, options.projectWizardAnswers, { force });
+
+    // Apply Claude config (CLAUDE.md, settings, hooks) via the standard merge engine
+    const fpHash = hashFingerprint(projectResult.syntheticFingerprint);
+    const { filesModified: configFiles } = applyLayer(repoRoot, projectResult.layer, {
+      profileUrl: "generated",
+      version: "1.0.0",
+      overlays: [options.projectWizardAnswers.language],
+      managedSectionContent: projectResult.layer.claudeMdSections ?? "",
+      mcpJsonProfileContent: projectResult.layer.mcpJson ? JSON.stringify(projectResult.layer.mcpJson) : "",
+      settingsJsonProfileContent: projectResult.layer.settingsJson ? JSON.stringify(projectResult.layer.settingsJson) : "",
+      hooksProfileContent: projectResult.layer.hooksJson ? JSON.stringify(projectResult.layer.hooksJson) : "",
+      teamHookRefs: {},
+      source: "generated",
+      fingerprint: fpHash,
+      wizardAnswers: projectResult.sharedAnswers,
+    });
+
+    return {
+      profileName: "generated",
+      profileVersion: "1.0.0",
+      overlay: options.projectWizardAnswers.language,
+      filesModified: [...projectResult.filesWritten, ...configFiles],
+      provenanceReport: projectResult.provenanceReport,
+      projectCreation: true,
+      designDocPath: projectResult.designDocPath,
     };
   }
 
